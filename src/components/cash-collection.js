@@ -139,16 +139,20 @@ export function CashCollection() {
         }
     };
 
-    // Polling effect
+    // Polling effect: poll vendors and cash every 1 second, and refundable orders every 3 seconds
     useEffect(() => {
+        let tick = 0;
         const interval = setInterval(() => {
             if (activeCategory === 'vendor') {
                 fetchVendors();
-                fetchRefundableOrders();
+                tick = (tick + 1) % 3;
+                if (tick === 0) {
+                    fetchRefundableOrders();
+                }
             } else {
                 fetchCash();
             }
-        }, 3000);
+        }, 1000);
         return () => clearInterval(interval);
     }, [activeCategory, selectedDate]);
 
@@ -168,36 +172,6 @@ export function CashCollection() {
                     paymentStatus: updatedItem.paymentStatus
                 }));
             }
-        }
-    }, [cashCollections, vendorList]);
-
-    // Polling effect
-    useEffect(() => {
-        const interval = setInterval(() => {
-            if (activeCategory === 'vendor') {
-                fetchVendors();
-            } else {
-                fetchCash();
-            }
-        }, 1000); // Poll every 1 second as requested
-        return () => clearInterval(interval);
-    }, [activeCategory, selectedDate]);
-
-    // Update selectedTransaction when lists change
-    useEffect(() => {
-        if (selectedTransaction) {
-            const list = activeCategory === 'vendor' ? vendorList : cashCollections;
-            const updatedItem = list.find(i => i.id === selectedTransaction.id);
-            // Only update if we found it. 
-            // Note: This might overwrite local optimistic updates if backend is slow.
-            // But for "Total Amount Due" it ensures eventual consistency.
-            // To avoid jitter, we could check if status changed or amount changed significantly?
-            // For now, let's trust the backend or our optimistic update.
-            // If we optimistically updated, `orders` in selectedTransaction might be newer than backend.
-            // But `pendingAmount` in `updatedItem` comes from backend summary.
-            // If backend hasn't updated yet, `updatedItem.pendingAmount` will be old.
-            // So polling might revert the "Total Amount Due" until backend catches up.
-            // However, the user wants "auto update", so this is likely what they expect.
         }
     }, [cashCollections, vendorList]);
 
@@ -255,15 +229,15 @@ export function CashCollection() {
             });
 
             if (response.ok) {
-                // Update local list state
-                setCashCollections(prev => prev.map(group => {
+                // Update local list state optimistically
+                const setList = activeCategory === 'vendor' ? setVendorList : setCashCollections;
+                setList(prev => prev.map(group => {
                     if (group.id === transactionGroup.id) {
-                        // Create a new orders array with updated statuses
-                        const updatedOrders = (group.orders || []).map(o =>
+                        const ordersSource = group.orders || transactionGroup.orders || [];
+                        const updatedOrders = ordersSource.map(o =>
                             orderIdsToPay.includes(o.id) ? { ...o, status: 'received' } : o
                         );
 
-                        // Recalculate group totals
                         const newPendingAmount = updatedOrders.filter(o => o.status !== 'received').reduce((sum, o) => sum + o.amount, 0);
                         const newReceivedAmount = updatedOrders.filter(o => o.status === 'received').reduce((sum, o) => sum + o.amount, 0);
                         const newStatus = newPendingAmount === 0 ? 'received' : 'pending';
@@ -273,7 +247,8 @@ export function CashCollection() {
                             paymentStatus: newStatus,
                             pendingAmount: newPendingAmount,
                             receivedAmount: newReceivedAmount,
-                            orders: updatedOrders
+                            amount: newPendingAmount > 0 ? newPendingAmount : newReceivedAmount,
+                            orders: group.orders ? updatedOrders : undefined
                         };
                     }
                     return group;
@@ -287,20 +262,25 @@ export function CashCollection() {
                         );
                         const newPendingAmount = updatedOrders.filter(o => o.status !== 'received').reduce((sum, o) => sum + o.amount, 0);
                         const newReceivedAmount = updatedOrders.filter(o => o.status === 'received').reduce((sum, o) => sum + o.amount, 0);
-                        const newStatus = newPendingAmount === 0 ? 'received' : 'pending'; // Check if fully paid
+                        const newStatus = newPendingAmount === 0 ? 'received' : 'pending';
 
                         return {
                             ...prev,
                             paymentStatus: newStatus,
                             pendingAmount: newPendingAmount,
                             receivedAmount: newReceivedAmount,
+                            amount: newPendingAmount > 0 ? newPendingAmount : newReceivedAmount,
                             orders: updatedOrders
                         };
                     });
                 }
 
-                // Refresh lists to ensure sync (optional but safer)
-                // if (activeCategory === 'vendor') fetchVendors(); else fetchCash();
+                // Refresh lists to ensure sync
+                if (activeCategory === 'vendor') {
+                    fetchVendors();
+                } else {
+                    fetchCash();
+                }
 
                 Alert.alert("Success", "Payment marked as received.");
             } else {
@@ -329,6 +309,28 @@ export function CashCollection() {
                     Alert.alert("Refund Processed", data.message);
                     // Remove from refundable list immediately
                     setRefundableOrderNos(prev => prev.filter(id => id !== String(realOrderId)));
+                    
+                    // Update local list state optimistically
+                    setVendorList(prev => prev.map(group => {
+                        if (group.id === selectedTransaction.id) {
+                            const updatedOrders = (selectedTransaction.orders || []).map(o =>
+                                o.id === vendorOrderId ? { ...o, status: 'received' } : o
+                            );
+                            const newPendingAmount = updatedOrders.filter(o => o.status !== 'received').reduce((sum, o) => sum + o.amount, 0);
+                            const newReceivedAmount = updatedOrders.filter(o => o.status === 'received').reduce((sum, o) => sum + o.amount, 0);
+                            const newStatus = newPendingAmount === 0 ? 'received' : 'pending';
+
+                            return {
+                                ...group,
+                                paymentStatus: newStatus,
+                                pendingAmount: newPendingAmount,
+                                receivedAmount: newReceivedAmount,
+                                amount: newPendingAmount > 0 ? newPendingAmount : newReceivedAmount
+                            };
+                        }
+                        return group;
+                    }));
+
                     // Update local vendor orders to mark as refunded
                     setSelectedTransaction(prev => {
                         if (!prev) return prev;
@@ -346,6 +348,7 @@ export function CashCollection() {
                             paymentStatus: newStatus,
                             pendingAmount: newPendingAmount,
                             receivedAmount: newReceivedAmount,
+                            amount: newPendingAmount > 0 ? newPendingAmount : newReceivedAmount,
                             orders: updatedOrders
                         };
                     });
