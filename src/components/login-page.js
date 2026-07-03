@@ -156,7 +156,7 @@ export function LoginPage({ onLogin }) {
                     <View style={{ marginTop: 40, alignItems: 'center' }}>
                         <Text style={{ color: '#475569', fontSize: 13, textAlign: 'center', lineHeight: 20 }}>
                             © 2024 JKD MART Logistics Hub Management.{"\n"}
-                            Powered by Antigravity OS
+                            Powered by JKD MART
                         </Text>
                     </View>
                 </View>
